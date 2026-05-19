@@ -14,8 +14,8 @@
 #include "Ed25519.h"
 #include "Hash.h"
 #include "Mempool.h"
+#include "MiniJson.h"
 #include "SHA256.h"
-#include <nlohmann/json.hpp>
 
 #include <cmath>
 #include <cstdint>
@@ -24,7 +24,7 @@
 #include <string>
 #include <variant>
 
-using json = nlohmann::json;
+using json = poc::minijson::Value;
 using namespace poc;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ static TransferTransaction transferFromJson(const json& j) {
         inputs.push_back({
             inp.at("prev_tx_id").get<std::string>(),
             inp.at("output_index").get<uint16_t>(),
-            inp.value("signature", "")
+            inp.value<std::string>("signature", "")
         });
     }
     std::vector<TransferTxOutput> outputs;
@@ -257,7 +257,7 @@ static json handleMempoolAdd(const json& params, Blockchain& chain, Mempool& mem
         }
         totalInput += utxoAmount.value();
 
-        std::string publicKey = inputsJson[i].value("public_key", "");
+        std::string publicKey = inputsJson[i].value<std::string>("public_key", "");
         if (publicKey.empty()) {
             return json{{"error", "Missing public_key for input " + std::to_string(i)}};
         }
@@ -574,7 +574,7 @@ int main() {
                     };
                 }
             }
-        } catch (const json::exception& e) {
+        } catch (const poc::minijson::ParseError& e) {
             response = {
                 {"id", reqId},
                 {"ok", false},

@@ -8,8 +8,10 @@
 #include "Blockchain.h"
 #include "Mempool.h"
 #include "Ed25519.h"
+#include "MiniJson.h"
 
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -767,6 +769,170 @@ void testEd25519() {
     PASS()
 }
 
+// ─── MiniJson Tests ──────────────────────────────────────────────────────────
+
+void testMiniJson() {
+    std::cout << "\n[MiniJson]" << std::endl;
+    namespace mj = poc::minijson;
+
+    TEST("parse null")
+        auto v = mj::Value::parse("null");
+        EXPECT(v.isNull());
+    PASS()
+
+    TEST("parse booleans")
+        EXPECT(mj::Value::parse("true").asBool() == true);
+        EXPECT(mj::Value::parse("false").asBool() == false);
+    PASS()
+
+    TEST("parse integer")
+        auto v = mj::Value::parse("42");
+        EXPECT(v.isInt());
+        EXPECT_EQ(v.asInt(), 42);
+    PASS()
+
+    TEST("parse negative integer")
+        EXPECT_EQ(mj::Value::parse("-17").asInt(), -17);
+    PASS()
+
+    TEST("parse double with fraction")
+        auto v = mj::Value::parse("3.14");
+        EXPECT(v.isDouble());
+        EXPECT(std::fabs(v.asDouble() - 3.14) < 1e-12);
+    PASS()
+
+    TEST("parse string with escapes")
+        auto v = mj::Value::parse("\"a\\tb\\\"c\"");
+        EXPECT_EQ(v.asString(), std::string("a\tb\"c"));
+    PASS()
+
+    TEST("parse empty array and object")
+        EXPECT(mj::Value::parse("[]").isArray());
+        EXPECT_EQ(mj::Value::parse("[]").size(), (size_t)0);
+        EXPECT(mj::Value::parse("{}").isObject());
+        EXPECT_EQ(mj::Value::parse("{}").size(), (size_t)0);
+    PASS()
+
+    TEST("parse nested object")
+        auto v = mj::Value::parse("{\"a\":1,\"b\":{\"c\":[2,3]}}");
+        EXPECT(v.contains("a"));
+        EXPECT_EQ(v.at("a").asInt(), 1);
+        EXPECT(v.at("b").contains("c"));
+        EXPECT_EQ(v.at("b").at("c").size(), (size_t)2);
+        EXPECT_EQ(v.at("b").at("c")[0].asInt(), 2);
+        EXPECT_EQ(v.at("b").at("c")[1].asInt(), 3);
+    PASS()
+
+    TEST("dump round-trip preserves data")
+        std::string original = "{\"id\":1,\"ok\":true,\"items\":[1,2,3]}";
+        auto v = mj::Value::parse(original);
+        std::string out = v.dump();
+        auto v2 = mj::Value::parse(out);
+        EXPECT_EQ(v2.at("id").asInt(), 1);
+        EXPECT(v2.at("ok").asBool());
+        EXPECT_EQ(v2.at("items").size(), (size_t)3);
+    PASS()
+
+    TEST("dump integer has no decimal point")
+        mj::Value v(int(42));
+        EXPECT_EQ(v.dump(), std::string("42"));
+    PASS()
+
+    TEST("dump double appends .0 for integral values")
+        mj::Value v(525.0);
+        EXPECT_EQ(v.dump(), std::string("525.0"));
+    PASS()
+
+    TEST("dump escapes special chars")
+        mj::Value v(std::string("a\nb\"c"));
+        EXPECT_EQ(v.dump(), std::string("\"a\\nb\\\"c\""));
+    PASS()
+
+    TEST("initializer-list object construction")
+        mj::Value v = {
+            {"id", 1},
+            {"ok", true},
+            {"name", std::string("hello")},
+        };
+        EXPECT(v.isObject());
+        EXPECT_EQ(v.at("id").asInt(), 1);
+        EXPECT(v.at("ok").asBool());
+        EXPECT_EQ(v.at("name").asString(), std::string("hello"));
+    PASS()
+
+    TEST("operator[] auto-promotes null to object")
+        mj::Value v;
+        v["k"] = 7;
+        EXPECT(v.isObject());
+        EXPECT_EQ(v.at("k").asInt(), 7);
+    PASS()
+
+    TEST("push_back auto-promotes null to array")
+        mj::Value v;
+        v.push_back(1);
+        v.push_back(2);
+        EXPECT(v.isArray());
+        EXPECT_EQ(v.size(), (size_t)2);
+    PASS()
+
+    TEST("value<T>() returns default for missing key")
+        auto v = mj::Value::parse("{}");
+        EXPECT_EQ(v.value<int>("missing", 99), 99);
+        EXPECT_EQ(v.value<std::string>("missing", std::string("def")), std::string("def"));
+    PASS()
+
+    TEST("value<T>() returns parsed value when present")
+        auto v = mj::Value::parse("{\"n\":5}");
+        EXPECT_EQ(v.value<int>("n", 99), 5);
+    PASS()
+
+    TEST("contains returns false on non-object")
+        auto v = mj::Value::parse("[1,2,3]");
+        EXPECT(!v.contains("anything"));
+    PASS()
+
+    TEST("at on missing key throws")
+        auto v = mj::Value::parse("{}");
+        bool threw = false;
+        try { (void)v.at("nope"); } catch (const mj::ParseError&) { threw = true; }
+        EXPECT(threw);
+    PASS()
+
+    TEST("range-for iterates array elements")
+        auto v = mj::Value::parse("[10,20,30]");
+        long long sum = 0;
+        for (const auto& item : v) sum += item.asInt();
+        EXPECT_EQ(sum, 60);
+    PASS()
+
+    TEST("parse error on malformed input")
+        bool threw = false;
+        try { (void)mj::Value::parse("{not valid}"); } catch (const mj::ParseError&) { threw = true; }
+        EXPECT(threw);
+    PASS()
+
+    TEST("parse rejects \\u escapes (closed grammar)")
+        bool threw = false;
+        try { (void)mj::Value::parse("\"\\u0041\""); } catch (const mj::ParseError&) { threw = true; }
+        EXPECT(threw);
+    PASS()
+
+    TEST("typed get<uint16_t> casts correctly")
+        auto v = mj::Value::parse("65535");
+        EXPECT_EQ(v.get<uint16_t>(), (uint16_t)65535);
+    PASS()
+
+    TEST("nested initializer-list with arrays")
+        mj::Value v = {
+            {"items", mj::Value::array()},
+        };
+        v["items"].push_back(1);
+        v["items"].push_back(2);
+        std::string s = v.dump();
+        EXPECT_EQ(s, std::string("{\"items\":[1,2]}"));
+    PASS()
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -786,6 +952,7 @@ int main() {
     testMempool();
     testBlockchainExtended();
     testEd25519();
+    testMiniJson();
 
     std::cout << "\n═══════════════════════════════════════════" << std::endl;
     std::cout << "  Results: " << passed << " passed, " << failed << " failed" << std::endl;

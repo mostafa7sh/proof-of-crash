@@ -17,6 +17,7 @@ add_library(poc_blockchain
     src/Blockchain.cpp
     src/Mempool.cpp
     src/Ed25519.cpp
+    src/MiniJson.cpp
 )
 
 target_include_directories(poc_blockchain PUBLIC include)
