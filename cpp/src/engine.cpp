@@ -370,6 +370,53 @@ static json handleCheckFinalization(const json& params, Blockchain&, Mempool&) {
     return {{"can_finalize", check.canFinalize}, {"reason", check.reason}};
 }
 
+// Deterministic agreement status for a proof's votes. "Consensus reached" =
+// a quorum (>= MIN_VERIFICATIONS) AND a strict majority of votes agree with
+// the median (within OUTLIER_THRESHOLD — the same band the reward engine uses
+// to decide who gets paid). Pure function of the vote set; no time component.
+static json handleConsensusStatus(const json& params, Blockchain&, Mempool&) {
+    std::vector<double> scores;
+    if (params.contains("votes")) {
+        for (const auto& v : params.at("votes")) {
+            scores.push_back(v.at("score").get<double>());
+        }
+    }
+
+    int voteCount = static_cast<int>(scores.size());
+
+    if (voteCount == 0) {
+        return {
+            {"vote_count", 0},
+            {"median", nullptr},
+            {"agreeing_count", 0},
+            {"dissenting_count", 0},
+            {"consensus_reached", false},
+            {"outlier_threshold", OUTLIER_THRESHOLD},
+            {"min_verifications", MIN_VERIFICATIONS},
+        };
+    }
+
+    double median = computeMedian(scores);
+    int agreeing = 0;
+    for (double s : scores) {
+        if (std::abs(s - median) <= OUTLIER_THRESHOLD) ++agreeing;
+    }
+    int dissenting = voteCount - agreeing;
+
+    bool quorum = voteCount >= MIN_VERIFICATIONS;
+    bool majorityAgree = agreeing * 2 > voteCount;  // strict majority
+
+    return {
+        {"vote_count", voteCount},
+        {"median", median},
+        {"agreeing_count", agreeing},
+        {"dissenting_count", dissenting},
+        {"consensus_reached", quorum && majorityAgree},
+        {"outlier_threshold", OUTLIER_THRESHOLD},
+        {"min_verifications", MIN_VERIFICATIONS},
+    };
+}
+
 static json handleMempoolGetPending(const json&, Blockchain&, Mempool& mempool) {
     auto pending = mempool.getPending();
     json txArr = json::array();
@@ -516,6 +563,7 @@ int main() {
         {"verify_ed25519",      handleVerifyEd25519},
         {"build_coinbase",      handleBuildCoinbase},
         {"check_finalization",  handleCheckFinalization},
+        {"consensus_status",    handleConsensusStatus},
     };
 
     std::cerr << "[engine] poc_engine started, awaiting commands on stdin\n";
