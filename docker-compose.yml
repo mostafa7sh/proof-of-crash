@@ -1,0 +1,75 @@
+# Unified stack for Proof of Crash. A single command builds and runs everything
+# from scratch — the C++ engine, the TypeScript backend, and the React frontend
+# are all compiled inside their containers:
+#
+#     docker compose up --build
+#
+# Then open the frontend at http://localhost:3001 (see port notes below).
+#
+# Ports are overridable so you can dodge host conflicts without editing this
+# file, e.g.  FRONTEND_PORT=3002 docker compose up --build
+# The ./up.sh helper picks free ports automatically.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       proof_of_crash
+      POSTGRES_USER:     poc_user
+      POSTGRES_PASSWORD: poc_password
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U poc_user -d proof_of_crash"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      # Context is the repo root so the image can compile the C++ engine from
+      # cpp/ as well as the Node backend from backend/.
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+    environment:
+      DB_HOST:     db
+      DB_PORT:     5432
+      DB_NAME:     proof_of_crash
+      DB_USER:     poc_user
+      DB_PASSWORD: poc_password
+      PORT:        3000
+      NODE_ENV:    development
+      JWT_SECRET:  195c3ee6aa4ae11065570c8bb48d508d5cb010fe6fcd5a1d90e8ab31d3e6c73173a0593c132e9cf19d95ed5b88892fea
+      # Trust the nginx frontend proxy so rate-limiting/audit see real client IPs.
+      TRUST_PROXY: "true"
+    healthcheck:
+      # node:22 ships a global fetch; 200 from /health means the API is up.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      # Host 3001 -> nginx :80. Override with FRONTEND_PORT if 3001 is taken.
+      - "${FRONTEND_PORT:-3001}:80"
+
+volumes:
+  postgres_data:

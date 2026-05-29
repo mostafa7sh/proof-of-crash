@@ -1,0 +1,26 @@
+# Keep the Docker build context lean and reproducible.
+# The build context is the repo root (see docker-compose.yml).
+
+# Node dependencies — reinstalled inside the image.
+**/node_modules
+
+# Build artifacts — recompiled inside the image. Excluding cpp/build is
+# essential: a host CMakeCache.txt (different compiler / absolute paths) would
+# corrupt the in-container configure step.
+**/build
+**/dist
+**/*.o
+**/*.a
+
+# VCS / editor / OS
+.git
+.gitignore
+.vscode
+**/.DS_Store
+
+# Secrets and local env — provided via compose `environment:` instead.
+**/.env
+**/.env.local
+
+# Docs / plans not needed in the image
+**/*.md
