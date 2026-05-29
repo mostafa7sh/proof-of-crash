@@ -16,6 +16,7 @@
 #include "Mempool.h"
 #include "MiniJson.h"
 #include "SHA256.h"
+#include "TxValidation.h"
 
 #include <cmath>
 #include <cstdint>
@@ -122,7 +123,8 @@ static TransferTransaction transferFromJson(const json& j) {
         inputs.push_back({
             inp.at("prev_tx_id").get<std::string>(),
             inp.at("output_index").get<uint16_t>(),
-            inp.value<std::string>("signature", "")
+            inp.value<std::string>("signature", ""),
+            inp.value<std::string>("public_key", "")
         });
     }
     std::vector<TransferTxOutput> outputs;
@@ -241,39 +243,18 @@ static json handleMempoolAdd(const json& params, Blockchain& chain, Mempool& mem
         }
     }
 
-    // Validate each input: UTXO existence + Ed25519 signature + accumulate amount.
-    // Conservation (sum_in == sum_out) is enforced here so callers don't have to
-    // replicate this rule in TypeScript.
-    const auto& inputsJson = params.at("inputs");
-    const auto& txInputs = tx.inputs();
-
-    double totalInput = 0.0;
-    for (size_t i = 0; i < txInputs.size(); ++i) {
-        const auto& inp = txInputs[i];
-
-        auto utxoAmount = chain.getUTXOAmount(inp.prevTxId, inp.outputIndex);
-        if (!utxoAmount.has_value()) {
-            return json{{"error", "Input " + inp.prevTxId.substr(0, 16) + ":" + std::to_string(inp.outputIndex) + " not found or already spent"}};
-        }
-        totalInput += utxoAmount.value();
-
-        std::string publicKey = inputsJson[i].value<std::string>("public_key", "");
-        if (publicKey.empty()) {
-            return json{{"error", "Missing public_key for input " + std::to_string(i)}};
-        }
-
-        if (!verifyEd25519Hex(tx.txId(), inp.signature, publicKey)) {
-            return json{{"error", "Invalid Ed25519 signature for input " + inp.prevTxId.substr(0, 16) + ":" + std::to_string(inp.outputIndex)}};
-        }
+    // Full consensus validation — the single authority for whether a transfer
+    // may spend coins. Covers structure, duplicate inputs, txId integrity, input
+    // existence + unspent state, ownership (SHA256(publicKey) == UTXO owner),
+    // Ed25519 signatures over the txId, and input/output conservation. The engine
+    // does NOT trust the Node layer to have performed any of these checks.
+    TxValidationResult validation = validateTransferTransaction(tx, chain);
+    if (!validation.valid) {
+        return json{{"error", validation.error}};
     }
 
-    // Conservation: no fees, no minting on transfers.
-    // 5e-9 tolerance matches the fixed-point round-trip precision (×10^8 satoshis).
-    if (std::abs(totalInput - tx.totalOutput()) > 5e-9) {
-        return json{{"error", "Conservation violation: input total " + std::to_string(totalInput) +
-                              " does not match output total " + std::to_string(tx.totalOutput())}};
-    }
-
+    // Mempool admission adds the orthogonal intra-mempool rules: not already
+    // pending, and no other pending transaction claims the same outpoint.
     auto result = mempool.addTransaction(tx);
     if (!result.success) {
         return json{{"error", result.error}};

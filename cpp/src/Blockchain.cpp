@@ -124,6 +124,13 @@ std::optional<double> Blockchain::getUTXOAmount(const std::string& txId, uint16_
     return it->second.amount;
 }
 
+std::optional<Blockchain::OwnedOutput> Blockchain::getUTXO(const std::string& txId, uint16_t outputIndex) const {
+    std::string key = txId + ":" + std::to_string(outputIndex);
+    auto it = utxoSet_.find(key);
+    if (it == utxoSet_.end()) return std::nullopt;
+    return OwnedOutput{ it->second.address, it->second.amount };
+}
+
 std::vector<Blockchain::UTXOInfo> Blockchain::getUTXOs(const std::string& address) const {
     std::vector<UTXOInfo> result;
     for (const auto& [key, entry] : utxoSet_) {

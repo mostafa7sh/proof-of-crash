@@ -64,6 +64,16 @@ public:
     /// Used by the engine to enforce input/output conservation on transfers.
     std::optional<double> getUTXOAmount(const std::string& txId, uint16_t outputIndex) const;
 
+    /// Owner address + amount of a specific UTXO if it exists and is unspent.
+    /// The owner address is what transaction validation binds the spending public
+    /// key to (ownership check), so the validator must read it from chain state
+    /// rather than trusting the caller.
+    struct OwnedOutput {
+        std::string address;
+        double amount;
+    };
+    std::optional<OwnedOutput> getUTXO(const std::string& txId, uint16_t outputIndex) const;
+
     /// Info about a single unspent output.
     struct UTXOInfo {
         std::string txId;

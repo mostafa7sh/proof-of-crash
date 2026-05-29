@@ -63,7 +63,14 @@ private:
 struct TxInput {
     std::string prevTxId;       // txId of the transaction containing the UTXO
     uint16_t outputIndex;       // which output in that transaction
-    std::string signature;      // hex Ed25519 signature of txId
+    std::string signature;      // hex Ed25519 signature of the spending txId
+    std::string publicKey;      // hex Ed25519 public key authorizing the spend.
+                                // The owner address is SHA256(publicKey); validation
+                                // binds this key to the UTXO's owner. This is witness
+                                // data supplied at spend time — deliberately NOT part
+                                // of the txId preimage (serializeForSigning), so a
+                                // transaction's identity is fixed by its inputs+outputs
+                                // and is independent of who later authorizes it.
 };
 
 /// A single output in a transfer transaction.
