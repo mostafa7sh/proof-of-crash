@@ -1,0 +1,7 @@
+# Keep the frontend build context lean; everything below is rebuilt in-image.
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store

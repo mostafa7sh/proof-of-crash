@@ -1,0 +1,185 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Landing page — scrollytelling sections.
+   Scoped to the homepage; reuses the global design tokens from theme.css
+   (cyan/black brand, gradient cards, mono labels). Animations use transform +
+   opacity only, and stand down under prefers-reduced-motion.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Animated node-mesh background (hero + CTA) ──────────────────────────── */
+.net-bg {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  z-index: 0; pointer-events: none; opacity: 0.55;
+}
+.net-bg .net-links line { stroke: rgba(34, 211, 238, 0.16); stroke-width: 1; }
+.net-bg .net-nodes circle {
+  fill: var(--cyan-400);
+  transform-box: fill-box; transform-origin: center;
+  animation: net-pulse 4.5s ease-in-out infinite;
+}
+@keyframes net-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.35); }
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────────── */
+.hero-fx {
+  position: relative; overflow: hidden;
+  min-height: calc(100svh - 69px);   /* full screen below the sticky navbar */
+  display: flex; align-items: center;
+  padding: 96px 24px;
+}
+@media (max-width: 640px) { .hero-fx { padding: 72px 18px; } }
+.hero-fx .hero-inner { position: relative; z-index: 2; }
+/* radial fade so the mesh dissolves toward the headline */
+.hero-fx::after {
+  content: ''; position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  background: radial-gradient(ellipse 60% 60% at 50% 45%, rgba(0,0,0,0.0), rgba(0,0,0,0.55) 100%);
+}
+.hero-scroll-cue {
+  position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%);
+  z-index: 2; color: var(--text-faint); display: flex; flex-direction: column;
+  align-items: center; gap: 4px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+}
+.hero-scroll-cue svg { width: 18px; height: 18px; animation: cue-bounce 1.8s ease-in-out infinite; }
+@keyframes cue-bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(5px); } }
+
+/* shared section eyebrow + lead */
+.eyebrow {
+  display: inline-block; font-family: var(--mono); font-size: 13px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--cyan-400); margin-bottom: 14px;
+}
+.section-lead { font-size: 17px; color: var(--text-muted); max-width: 640px; line-height: 1.7; }
+.section-head { text-align: center; margin: 0 auto 56px; max-width: 720px; }
+.section-head .section-lead { margin: 16px auto 0; }
+
+/* ── Section 2 — Problem cards ───────────────────────────────────────────── */
+.problem-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+@media (max-width: 860px) { .problem-grid { grid-template-columns: 1fr; } }
+.problem-card { height: 100%; }
+.problem-card .pc-icon {
+  width: 44px; height: 44px; border-radius: var(--radius-sm); display: inline-flex;
+  align-items: center; justify-content: center; margin-bottom: 16px;
+  background: rgba(248,113,113,0.10); border: 1px solid rgba(248,113,113,0.25); color: var(--red);
+}
+.problem-card .pc-icon svg { width: 22px; height: 22px; }
+.problem-card h3 { margin-bottom: 8px; }
+.problem-card p { color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+
+/* ── Section 3 — How it works (scroll-driven) ────────────────────────────── */
+.hiw { display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 48px; align-items: start; }
+@media (max-width: 900px) { .hiw { grid-template-columns: 1fr; gap: 24px; } }
+
+.hiw-rail { position: sticky; top: 96px; }
+@media (max-width: 900px) { .hiw-rail { display: none; } }
+.hiw-stage {
+  background: var(--card-grad); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 40px 32px; display: flex; flex-direction: column; align-items: center; text-align: center;
+  min-height: 340px; justify-content: center; gap: 24px;
+}
+.hiw-stage-icon {
+  width: 96px; height: 96px; border-radius: 24px; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, rgba(6,182,212,0.18), rgba(59,130,246,0.12));
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-cyan); color: var(--cyan-400);
+}
+.hiw-stage-icon svg { width: 48px; height: 48px; }
+.hiw-stage-meta .hiw-stage-step { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; color: var(--cyan-400); text-transform: uppercase; }
+.hiw-stage-meta h3 { font-size: 22px; margin-top: 6px; }
+.hiw-dots { list-style: none; margin: 0; padding: 0; display: flex; gap: 10px; }
+.hiw-dots li { display: inline-flex; }
+.hiw-dots .hiw-dot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--surface-2);
+  border: 1px solid var(--border); transition: background .3s ease, transform .3s ease, border-color .3s ease;
+}
+.hiw-dots li.active .hiw-dot { background: var(--cyan-400); border-color: var(--cyan-400); transform: scale(1.35); }
+.hiw-dots li.done .hiw-dot { background: var(--cyan-500); border-color: var(--cyan-500); }
+
+/* Generous vertical rhythm so exactly one card sits near the trigger line at a
+   time — the sticky rail dwells on a step while you scroll the gap to the next. */
+.hiw-steps { display: flex; flex-direction: column; gap: 24vh; padding: 6vh 0 18vh; }
+.hiw-step {
+  border: 1px solid var(--border-soft); border-radius: var(--radius); background: var(--card-grad-soft);
+  transition: border-color .3s ease, background .3s ease, opacity .3s ease, transform .3s ease;
+  opacity: 0.45; transform: scale(0.985);
+}
+.hiw-step.is-active { border-color: var(--border-strong); opacity: 1; transform: scale(1); box-shadow: var(--shadow-cyan); }
+@media (max-width: 900px) {
+  /* No sticky rail on mobile — cards read as a normal list, always legible. */
+  .hiw-steps { gap: 16px; padding: 0; }
+  .hiw-step { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hiw-step { transition: opacity .3s ease, border-color .3s ease; transform: none; }
+  .hiw-step.is-active { transform: none; }
+}
+.hiw-step-inner { display: flex; gap: 20px; align-items: flex-start; padding: 24px; }
+.hiw-step-num { font-family: var(--mono); font-size: 14px; color: var(--cyan-400); font-weight: 700; padding-top: 4px; }
+.hiw-step-icon { width: 28px; height: 28px; color: var(--cyan-400); flex-shrink: 0; }
+.hiw-step h3 { margin-bottom: 6px; }
+.hiw-step p { color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+
+/* ── Section 4 — Flow diagram ────────────────────────────────────────────── */
+.flow { position: relative; display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 8px 0; }
+.flow-node {
+  position: relative; z-index: 1; display: flex; align-items: center; gap: 16px;
+  width: 100%; max-width: 360px;
+  background: var(--card-grad); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  padding: 14px 22px;
+}
+.flow-node-badge {
+  width: 44px; height: 44px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, var(--cyan-500), var(--blue-500)); color: #000;
+}
+.flow-node-badge svg { width: 22px; height: 22px; }
+.flow-node-text { display: flex; flex-direction: column; }
+.flow-node-label { font-weight: 700; }
+.flow-node-sub { font-family: var(--mono); font-size: 12px; color: var(--text-muted); }
+
+/* ── Section 5 — Features ────────────────────────────────────────────────── */
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+@media (max-width: 860px) { .feature-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .feature-grid { grid-template-columns: 1fr; } }
+.feature-card {
+  background: var(--card-grad-soft); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 28px; height: 100%;
+  transition: transform .25s ease, border-color .25s ease, box-shadow .25s ease;
+}
+.feature-card:hover { transform: translateY(-4px); border-color: var(--border-strong); box-shadow: var(--shadow-cyan); }
+.feature-card .fc-icon {
+  width: 48px; height: 48px; border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(34,211,238,0.10); border: 1px solid var(--border); color: var(--cyan-400); margin-bottom: 18px;
+  transition: background .25s ease;
+}
+.feature-card:hover .fc-icon { background: rgba(34,211,238,0.18); }
+.feature-card .fc-icon svg { width: 24px; height: 24px; }
+.feature-card h3 { margin-bottom: 8px; }
+.feature-card p { color: var(--text-muted); font-size: 14px; line-height: 1.6; }
+
+/* ── Section 6 — Stats ───────────────────────────────────────────────────── */
+.stats-band {
+  border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft);
+  background: linear-gradient(to bottom, rgba(8,51,68,0.10), rgba(23,37,84,0.06));
+}
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+@media (max-width: 860px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 420px) { .stats-grid { grid-template-columns: 1fr; } }
+.stat-block { text-align: center; }
+.stat-block .stat-num { font-size: 44px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; }
+.stat-block .stat-name { margin-top: 10px; font-family: var(--mono); font-size: 13px; color: var(--text-muted); }
+@media (max-width: 560px) { .stat-block .stat-num { font-size: 34px; } }
+
+/* ── Section 7 — Final CTA ───────────────────────────────────────────────── */
+.cta-final { position: relative; overflow: hidden; border-radius: var(--radius-lg); }
+.cta-final .net-bg { opacity: 0.35; }
+.cta-final .cta-inner {
+  position: relative; z-index: 2; text-align: center; padding: 72px 32px;
+  background: radial-gradient(ellipse 70% 80% at 50% 50%, rgba(6,182,212,0.10), transparent 70%);
+}
+.cta-final h2 { font-size: 38px; margin-bottom: 16px; }
+@media (max-width: 560px) { .cta-final h2 { font-size: 28px; } .cta-final .cta-inner { padding: 48px 20px; } }
+.cta-actions { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; margin-top: 32px; }
+
+/* ── Reduced motion: still the decorative loops; framer handles the rest ──── */
+@media (prefers-reduced-motion: reduce) {
+  .net-bg .net-nodes circle { animation: none; opacity: 0.6; }
+  .hero-scroll-cue svg { animation: none; }
+}
