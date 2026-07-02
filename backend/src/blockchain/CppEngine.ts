@@ -101,10 +101,10 @@ export interface CoinbaseBuildResult {
   coinbase_tx: CoinbaseTxSpec;
   tx_id: string;
   median_score: number;
-  base_reward: number;
-  finder_reward: number;
-  verifier_max_per: number;
-  total_minted: number;
+  base_reward: number;        // fixed block reward (e.g. 1000)
+  finder_reward: number;      // 70% of base_reward
+  verifier_pool: number;      // 30% of base_reward, shared across validators
+  total_minted: number;       // finder + validators == base_reward
   payouts: Array<{
     address: string;
     score: number;
@@ -435,8 +435,13 @@ export class CppEngine {
    * when a quorum (>= min_verifications) exists AND a strict majority of votes
    * fall within outlier_threshold of the median. Same primitives the reward
    * engine uses, so this can never disagree with reward distribution.
+   *
+   * `minVerifications` is the runtime quorum (scaled with the active community
+   * by the caller). The engine clamps it to MIN_VERIFICATIONS as a hard floor.
    */
-  async consensusStatus(votes: VerifierVoteSpec[]): Promise<ConsensusStatus> {
-    return this.call<ConsensusStatus>('consensus_status', { votes });
+  async consensusStatus(votes: VerifierVoteSpec[], minVerifications?: number): Promise<ConsensusStatus> {
+    const params: { votes: VerifierVoteSpec[]; min_verifications?: number } = { votes };
+    if (minVerifications !== undefined) params.min_verifications = minVerifications;
+    return this.call<ConsensusStatus>('consensus_status', params);
   }
 }

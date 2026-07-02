@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { pool } from '../config/database';
 import { getEngine } from '../blockchain/instance';
-import { requireAuth } from '../auth';
+import { requireAuth, sameAccount } from '../auth';
+import { isUuid } from '../utils/uuid';
+import { AI_MODELS, AI_REQUIRED_APPROVALS } from '../config/ai';
 import type { CrashProof, ApiError } from '../types';
 
 export const proofsRouter = Router();
@@ -24,6 +26,13 @@ proofsRouter.post('/', requireAuth, async (req: Request, res: Response) => {
     return;
   }
 
+  // app_id is a Postgres UUID — reject malformed ids up front with a precise
+  // message rather than letting the type cast throw a generic 500.
+  if (!isUuid(app_id)) {
+    res.status(400).json({ error: 'Invalid target application UUID format.', code: 'INVALID_UUID' } satisfies ApiError);
+    return;
+  }
+
   const validFormats = ['stdin', 'argv', 'file', 'binary'];
   if (!validFormats.includes(input_format)) {
     const err: ApiError = { error: `Invalid input_format. Allowed: ${validFormats.join(', ')}`, code: 'INVALID_FORMAT' };
@@ -33,10 +42,32 @@ proofsRouter.post('/', requireAuth, async (req: Request, res: Response) => {
 
   const client = await pool.connect();
   try {
-    // Verify the app exists
-    const appCheck = await client.query('SELECT app_id FROM apps WHERE app_id = $1', [app_id]);
+    // Verify the target application exists before staging a proof against it.
+    const appCheck = await client.query<{ developer_address: string }>(
+      'SELECT developer_address FROM apps WHERE app_id = $1',
+      [app_id],
+    );
     if (appCheck.rows.length === 0) {
-      res.status(404).json({ error: 'App not found', code: 'APP_NOT_FOUND' } satisfies ApiError);
+      res.status(404).json({ error: 'No application exists with this UUID. Check the target App ID and try again.', code: 'APP_NOT_FOUND' } satisfies ApiError);
+      return;
+    }
+
+    // The developer who uploaded the code cannot file a proof against it — and
+    // "developer" means the ACCOUNT, so a second key on the same account can't
+    // be used to prove a bug in one's own code.
+    if (await sameAccount(pool, appCheck.rows[0]!.developer_address, tester_address)) {
+      res.status(403).json({ error: 'You cannot submit a proof against your own code submission.', code: 'SELF_PROOF' } satisfies ApiError);
+      return;
+    }
+
+    // An application is closed once one of its proofs has been accepted into the
+    // ledger — only the accepted proof remains, so no further proofs are taken.
+    const finalizedCheck = await client.query(
+      `SELECT 1 FROM crash_proofs WHERE app_id = $1 AND status = 'finalized' LIMIT 1`,
+      [app_id],
+    );
+    if ((finalizedCheck.rowCount ?? 0) > 0) {
+      res.status(409).json({ error: 'This application already has an accepted proof and is closed to new submissions.', code: 'APP_FINALIZED' } satisfies ApiError);
       return;
     }
 
@@ -106,6 +137,95 @@ proofsRouter.get('/:proofId', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/proofs/:proofId/content — the actual crash input bytes (hex).
+// Public so every reviewer can inspect what is being voted on: validators
+// cannot meaningfully verify a proof they cannot see.
+proofsRouter.get('/:proofId/content', async (req: Request, res: Response) => {
+  const { proofId } = req.params as { proofId: string };
+
+  try {
+    const result = await pool.query<{
+      proof_id: string;
+      content_hash: string;
+      crash_input: Buffer;
+      input_format: string;
+      input_size: number;
+    }>(
+      `SELECT cp.proof_id, cp.content_hash, pc.crash_input, pc.input_format, pc.input_size
+         FROM crash_proofs cp
+         JOIN proof_contents pc ON pc.content_hash = cp.content_hash
+        WHERE cp.proof_id = $1`,
+      [proofId],
+    );
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ error: 'Proof content not found', code: 'NOT_FOUND' } satisfies ApiError);
+      return;
+    }
+
+    const row = result.rows[0]!;
+    res.json({
+      proof_id: row.proof_id,
+      content_hash: row.content_hash,
+      input_format: row.input_format,
+      input_size: row.input_size,
+      crash_input_hex: row.crash_input.toString('hex'),
+    });
+  } catch (err) {
+    console.error('GET /api/proofs/:proofId/content error:', err);
+    res.status(500).json({ error: 'Internal server error', code: 'DB_ERROR' } satisfies ApiError);
+  }
+});
+
+// GET /api/proofs/:proofId/ai-verifications — the advisory AI model review.
+// Public so anyone can see how the three models (ChatGPT / Gemini / DeepSeek)
+// judged this proof. `ai_verified` is true only when ALL required models
+// approved; it never gates the ledger (human consensus does).
+proofsRouter.get('/:proofId/ai-verifications', async (req: Request, res: Response) => {
+  const { proofId } = req.params as { proofId: string };
+
+  try {
+    const result = await pool.query<{
+      model: string;
+      approved: boolean;
+      confidence_score: string;
+      reasoning: string | null;
+      queried_at: string;
+    }>(
+      `SELECT model, approved, confidence_score::text AS confidence_score, reasoning, queried_at
+         FROM ai_verifications WHERE proof_id = $1`,
+      [proofId],
+    );
+
+    // Order by the canonical model list so the UI is stable regardless of insert
+    // order; coerce the NUMERIC confidence (pg returns it as a string).
+    const byModel = new Map(result.rows.map((r) => [r.model, r]));
+    const data = AI_MODELS
+      .map((m) => byModel.get(m.id))
+      .filter((r): r is NonNullable<typeof r> => r !== undefined)
+      .map((r) => ({
+        model: r.model,
+        approved: r.approved,
+        confidence_score: parseFloat(r.confidence_score),
+        reasoning: r.reasoning,
+        queried_at: parseInt(r.queried_at),
+      }));
+
+    const approvedCount = data.filter((r) => r.approved).length;
+
+    res.json({
+      proof_id: proofId,
+      required: AI_REQUIRED_APPROVALS,
+      approved_count: approvedCount,
+      ai_verified: data.length >= AI_REQUIRED_APPROVALS && approvedCount >= AI_REQUIRED_APPROVALS,
+      data,
+    });
+  } catch (err) {
+    console.error('GET /api/proofs/:proofId/ai-verifications error:', err);
+    res.status(500).json({ error: 'Internal server error', code: 'DB_ERROR' } satisfies ApiError);
+  }
+});
+
 // GET /api/proofs — list proofs (filtered by status)
 proofsRouter.get('/', async (req: Request, res: Response) => {
   const { status, app_id, page = '1', page_size = '20' } = req.query as {
@@ -126,8 +246,15 @@ proofsRouter.get('/', async (req: Request, res: Response) => {
   if (status) {
     conditions.push(`status = $${paramIdx++}`);
     params.push(status);
+  } else {
+    // Rejected proofs are clutter — never surface them in the default feed.
+    conditions.push(`status <> 'rejected'`);
   }
   if (app_id) {
+    if (!isUuid(app_id)) {
+      res.status(400).json({ error: 'Invalid application UUID format.', code: 'INVALID_UUID' } satisfies ApiError);
+      return;
+    }
     conditions.push(`app_id = $${paramIdx++}`);
     params.push(app_id);
   }

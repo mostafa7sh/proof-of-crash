@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { pool } from '../config/database';
 import { getEngine } from '../blockchain/instance';
-import { requireAuth } from '../auth';
+import { computeQuorum } from '../blockchain/quorum';
+import { requireAuth, sameAccount } from '../auth';
 import type { Verification, ApiError } from '../types';
 
 export const verificationsRouter = Router();
@@ -63,10 +64,12 @@ verificationsRouter.post('/', requireAuth, async (req: Request, res: Response) =
       return;
     }
 
-    // The submitter cannot rate their own proof. Allowing self-verification
-    // would let a single key trivially seed the consensus toward any score.
-    if (proof.tester_address === verifier_address) {
-      res.status(403).json({ error: 'Cannot verify your own proof', code: 'SELF_VERIFICATION' } satisfies ApiError);
+    // The submitter cannot rate their own proof — and "self" is the ACCOUNT, not
+    // just the address. A multi-key user could otherwise submit with one key and
+    // approve with another, manufacturing consensus while passing an
+    // address-only check.
+    if (await sameAccount(pool, proof.tester_address, verifier_address)) {
+      res.status(403).json({ error: 'Cannot verify a proof submitted by your own account', code: 'SELF_VERIFICATION' } satisfies ApiError);
       return;
     }
 
@@ -102,12 +105,18 @@ verificationsRouter.post('/', requireAuth, async (req: Request, res: Response) =
       address: v.verifier_address,
       score: parseFloat(v.score),
     }));
-    const status = await getEngine().consensusStatus(votes);
+    // Quorum scales with the active community (the same number the UI shows and
+    // the miner enforces), so consensus is judged against the live threshold.
+    const quorum = await computeQuorum(pool, now);
+    const status = await getEngine().consensusStatus(votes, quorum);
 
+    // A vote can only be cast while voting is open, so the median stays sealed
+    // here (see the GET handler's blind-review rule).
     res.status(201).json({
       accepted: true,
       vote_count: status.vote_count,
-      current_median: status.median,
+      current_median: null,
+      scores_sealed: true,
       agreeing_count: status.agreeing_count,
       dissenting_count: status.dissenting_count,
       consensus_reached: status.consensus_reached,
@@ -124,11 +133,24 @@ verificationsRouter.post('/', requireAuth, async (req: Request, res: Response) =
   }
 });
 
-// GET /api/verifications/:proofId — get all votes for a proof
+// GET /api/verifications/:proofId — get all votes for a proof.
+//
+// Blind-review rule: while a proof is still being voted on, the median reward
+// score AND each verifier's individual score are withheld. Revealing them early
+// lets validators anchor on / copy existing opinions instead of evaluating
+// independently. Scores (and the median) are unsealed only once the proof is
+// finalized into the ledger. Vote count, agreement counts, and consensus_reached
+// stay visible so quorum progress is still transparent.
 verificationsRouter.get('/:proofId', async (req: Request, res: Response) => {
   const { proofId } = req.params as { proofId: string };
 
   try {
+    const proofRow = await pool.query<{ status: string }>(
+      'SELECT status FROM crash_proofs WHERE proof_id = $1',
+      [proofId],
+    );
+    const finalized = proofRow.rows[0]?.status === 'finalized';
+
     const rows = await pool.query<Verification>(
       `SELECT verification_id, proof_id, verifier_address, score,
               exit_code, signal_number, stdout_preview, stderr_preview,
@@ -140,15 +162,25 @@ verificationsRouter.get('/:proofId', async (req: Request, res: Response) => {
     );
 
     // Consensus status (median, agreement, quorum) comes from the C++ engine,
-    // the same source used at vote-submission and reward time.
-    const votes = rows.rows.map((v) => ({ address: v.verifier_address, score: v.score }));
-    const status = await getEngine().consensusStatus(votes);
+    // the same source used at vote-submission and reward time. `pg` returns the
+    // NUMERIC score column as a string, so coerce to a number before handing it
+    // to the engine — its JSON parser is strict and rejects a quoted number.
+    const votes = rows.rows.map((v) => ({ address: v.verifier_address, score: parseFloat(String(v.score)) }));
+    const status = await getEngine().consensusStatus(votes, await computeQuorum(pool));
+
+    // Seal scores until finalization; once revealed, coerce the NUMERIC score
+    // (returned as a string by pg) to a real number so it matches the API type.
+    const data = rows.rows.map((v) => ({
+      ...v,
+      score: finalized && v.score != null ? parseFloat(String(v.score)) : null,
+    }));
 
     res.json({
-      data: rows.rows,
+      data,
       proof_id: proofId,
+      scores_sealed: !finalized,
       vote_count: status.vote_count,
-      current_median: status.median,
+      current_median: finalized ? status.median : null,
       agreeing_count: status.agreeing_count,
       dissenting_count: status.dissenting_count,
       consensus_reached: status.consensus_reached,

@@ -84,7 +84,7 @@ export interface AppContent {
 
 // ─── Crash Proofs ─────────────────────────────────────────────────────────
 
-export type ProofStatus = 'pending' | 'voting' | 'finalized' | 'rejected';
+export type ProofStatus = 'pending' | 'voting' | 'finalized' | 'rejected' | 'archived';
 export type InputFormat = 'stdin' | 'argv' | 'file' | 'binary';
 
 export interface CrashProof {
@@ -129,7 +129,8 @@ export interface Verification {
 export interface AIVerification {
   ai_verification_id: string;
   proof_id: string;
-  model: string;            // 'gpt-4', 'claude-3-5-sonnet-20241022', etc.
+  model: string;            // provider id: 'chatgpt' | 'gemini' | 'deepseek'
+  approved: boolean;        // whether this model approved the proof
   confidence_score: number; // 0.000–1.000
   reasoning: string | null;
   request_hash: string;     // hash of the prompt sent (for reproducibility audit)
@@ -144,12 +145,12 @@ export interface VerifierScoreEntry {
 }
 
 export interface RewardDistribution {
-  base_reward: number;      // floor(median_score * 100)
+  base_reward: number;      // fixed block reward (BLOCK_REWARD, e.g. 1000)
   finder_reward: number;    // 70% of base_reward
-  verifier_pool: number;    // 30% of base_reward
+  verifier_pool: number;    // 30% of base_reward, shared by all validators
   verifier_payouts: Array<{
     address: string;
-    reward: number;         // proportional to accuracy
+    reward: number;         // share of the pool, weighted by closeness to the median
     distance: number;       // |score - median|
   }>;
 }

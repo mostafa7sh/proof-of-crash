@@ -15,6 +15,24 @@ const HEX_64 = /^[0-9a-f]{64}$/;
 
 export type Purpose = 'register' | 'login';
 
+/**
+ * Message an EXISTING account key signs to authorize attaching a specific new
+ * address to its account. Binding both the primary account and the exact new
+ * address means a stolen bearer session alone cannot add an attacker's key — an
+ * existing key must explicitly authorize *this* new address. (Note: unspoofable
+ * origin binding for anti-phishing is provided by WebAuthn, not this raw path.)
+ */
+export function buildAttachMessage(
+  challenge: string,
+  primaryAddress: string,
+  newAddress: string,
+): Buffer {
+  if (!HEX_64.test(challenge)) throw new Error('challenge must be 64 hex chars');
+  if (!HEX_64.test(primaryAddress)) throw new Error('primaryAddress must be 64 hex chars');
+  if (!HEX_64.test(newAddress)) throw new Error('newAddress must be 64 hex chars');
+  return Buffer.from(['poc-attach-v1', challenge, primaryAddress, newAddress].join(':'), 'utf8');
+}
+
 export function buildSignedMessage(
   purpose: Purpose,
   challenge: string,

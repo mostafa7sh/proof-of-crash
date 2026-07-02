@@ -10,8 +10,10 @@ import { appsRouter } from './routes/apps';
 import { proofsRouter } from './routes/proofs';
 import { verificationsRouter } from './routes/verifications';
 import { ledgerRouter } from './routes/ledger';
+import { mempoolRouter } from './routes/mempool';
+import { leaderboardRouter } from './routes/leaderboard';
 import { authRouter } from './routes/auth';
-import { purgeExpiredChallenges, purgeExpiredRefreshTokens, purgeExpiredRevokedJtis } from './auth';
+import { purgeExpiredChallenges, purgeExpiredRefreshTokens, purgeExpiredRevokedJtis, purgeExpiredWebauthnChallenges } from './auth';
 
 dotenv.config();
 
@@ -53,6 +55,8 @@ app.use('/api/apps',          appsRouter);
 app.use('/api/proofs',        proofsRouter);
 app.use('/api/verifications', verificationsRouter);
 app.use('/api/ledger',        ledgerRouter);
+app.use('/api/mempool',       mempoolRouter);
+app.use('/api/leaderboard',   leaderboardRouter);
 
 // 404 handler
 app.use((_req: Request, res: Response) => {
@@ -94,6 +98,7 @@ async function start(): Promise<void> {
     // Sweep expired auth artifacts hourly so the tables don't grow unbounded.
     const challengeSweep = setInterval(() => {
       void purgeExpiredChallenges(pool).catch(err => console.error('Challenge cleanup error:', err));
+      void purgeExpiredWebauthnChallenges(pool).catch(err => console.error('WebAuthn challenge cleanup error:', err));
       void purgeExpiredRefreshTokens(pool).catch(err => console.error('Refresh-token cleanup error:', err));
       void purgeExpiredRevokedJtis(pool).catch(err => console.error('Revoked-jti cleanup error:', err));
     }, 60 * 60 * 1000);

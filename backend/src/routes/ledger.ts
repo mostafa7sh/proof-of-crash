@@ -4,7 +4,8 @@ import { getEngine } from '../blockchain/instance';
 import { validateAndSubmitTransfer } from '../blockchain/validateTransfer';
 import { mineBlock } from '../blockchain/mining';
 import { requireAuth, requireAdmin } from '../auth';
-import type { Block as BlockDbRow, CrashProof, ApiError } from '../types';
+import { AI_MODELS, AI_REQUIRED_APPROVALS } from '../config/ai';
+import type { Block as BlockDbRow, CrashProof, AIVerification, ApiError } from '../types';
 
 export const ledgerRouter = Router();
 
@@ -274,12 +275,44 @@ ledgerRouter.get('/:blockHash', async (req: Request, res: Response) => {
     const block = blockResult.rows[0] as BlockDbRow;
     const proofs = await getProofsInBlock(block.block_hash);
 
-    const txResult = await pool.query<{ tx_id: string; tx_type: string; tx_index: number }>(
-      'SELECT tx_id, tx_type, tx_index FROM transactions WHERE block_hash = $1 ORDER BY tx_index',
+    // Attach each proof's advisory AI model review, and mark the whole block
+    // "AI Verified" when every proof was approved by all required models.
+    const verdicts = await getAiVerdictsForProofs(proofs.map((p) => p.proof_id));
+    const proofsWithAi = proofs.map((p) => ({ ...p, ai_verifications: verdicts.get(p.proof_id) ?? [] }));
+    const aiVerified = proofs.length > 0 &&
+      proofsWithAi.every((p) => p.ai_verifications.filter((v) => v.approved).length >= AI_REQUIRED_APPROVALS);
+
+    // Include each tx's outputs so the ledger can show the full reward split
+    // (finder 70% via 'bug_bounty', verifiers' 30% via 'verification_reward').
+    // The engine's tx JSON is persisted verbatim in raw_data, so parse it there.
+    const txResult = await pool.query<{ tx_id: string; tx_type: string; tx_index: number; raw_data: Buffer }>(
+      'SELECT tx_id, tx_type, tx_index, raw_data FROM transactions WHERE block_hash = $1 ORDER BY tx_index',
       [block.block_hash]
     );
 
-    res.json({ ...block, proofs, transactions: txResult.rows });
+    const transactions = txResult.rows.map((t) => {
+      let parsed: { proof_id?: string;
+                    outputs?: Array<{ address?: string; amount?: number; reason?: string }>;
+                    inputs?: Array<{ prev_tx_id?: string; output_index?: number }> } = {};
+      try { parsed = JSON.parse(t.raw_data.toString()); } catch { /* tolerate legacy blobs */ }
+      return {
+        tx_id: t.tx_id,
+        tx_type: t.tx_type,
+        tx_index: t.tx_index,
+        proof_id: parsed.proof_id ?? null,
+        outputs: (parsed.outputs ?? []).map((o) => ({
+          address: o.address ?? '',
+          amount: Number(o.amount ?? 0),
+          reason: o.reason ?? null,
+        })),
+        inputs: (parsed.inputs ?? []).map((i) => ({
+          prev_tx_id: i.prev_tx_id ?? '',
+          output_index: Number(i.output_index ?? 0),
+        })),
+      };
+    });
+
+    res.json({ ...block, proofs: proofsWithAi, ai_verified: aiVerified, transactions });
   } catch (err) {
     console.error('GET /api/ledger/:blockHash error:', err);
     res.status(500).json({ error: 'Internal server error', code: 'DB_ERROR' } satisfies ApiError);
@@ -301,11 +334,28 @@ ledgerRouter.get('/', async (req: Request, res: Response) => {
     const countResult = await pool.query<{ count: string }>('SELECT COUNT(*) as count FROM blocks');
     const total = parseInt(countResult.rows[0]?.count ?? '0');
 
-    const rows = await pool.query<BlockDbRow>(
-      `SELECT block_hash, block_number, previous_hash, merkle_root, version, timestamp
-       FROM blocks ORDER BY block_number DESC
+    // proof_count lets the explorer label each block's type (a block with ≥1
+    // proof is a "Bug Discovery Block"); tx_count is the real number of
+    // transactions (coinbase + transfer) in the block, so the list can show it
+    // without fetching every block's full transaction set. ai_verified is true
+    // when the block has ≥1 proof and EVERY proof in it was approved by all
+    // required AI models (advisory "AI Verified" badge).
+    const rows = await pool.query<BlockDbRow & { proof_count: number; tx_count: number; ai_verified: boolean }>(
+      `SELECT b.block_hash, b.block_number, b.previous_hash, b.merkle_root, b.version, b.timestamp,
+              (SELECT COUNT(*) FROM block_proofs bp WHERE bp.block_hash = b.block_hash)::int AS proof_count,
+              (SELECT COUNT(*) FROM transactions t  WHERE t.block_hash  = b.block_hash)::int AS tx_count,
+              (
+                (SELECT COUNT(*) FROM block_proofs bp WHERE bp.block_hash = b.block_hash) > 0
+                AND NOT EXISTS (
+                  SELECT 1 FROM block_proofs bp
+                  WHERE bp.block_hash = b.block_hash
+                    AND (SELECT COUNT(*) FROM ai_verifications av
+                           WHERE av.proof_id = bp.proof_id AND av.approved) < $3
+                )
+              ) AS ai_verified
+       FROM blocks b ORDER BY b.block_number DESC
        LIMIT $1 OFFSET $2`,
-      [size, offset]
+      [size, offset, AI_REQUIRED_APPROVALS]
     );
 
     res.json({ data: rows.rows, total, page: pageNum, page_size: size });
@@ -328,4 +378,31 @@ async function getProofsInBlock(blockHash: string): Promise<CrashProof[]> {
     [blockHash]
   );
   return result.rows;
+}
+
+// The advisory AI model verdicts for a set of proofs, keyed by proof_id and
+// ordered by the canonical model list (chatgpt, gemini, deepseek).
+async function getAiVerdictsForProofs(proofIds: string[]): Promise<Map<string, AIVerification[]>> {
+  const map = new Map<string, AIVerification[]>();
+  if (proofIds.length === 0) return map;
+
+  const result = await pool.query<AIVerification & { confidence_score: string }>(
+    `SELECT ai_verification_id, proof_id, model, approved,
+            confidence_score::text AS confidence_score, reasoning, request_hash, queried_at
+       FROM ai_verifications
+      WHERE proof_id = ANY($1)`,
+    [proofIds]
+  );
+
+  const order = new Map(AI_MODELS.map((m, i) => [m.id as string, i]));
+  for (const r of result.rows) {
+    const row: AIVerification = { ...r, confidence_score: parseFloat(r.confidence_score) };
+    const list = map.get(r.proof_id) ?? [];
+    list.push(row);
+    map.set(r.proof_id, list);
+  }
+  for (const list of map.values()) {
+    list.sort((a, b) => (order.get(a.model) ?? 99) - (order.get(b.model) ?? 99));
+  }
+  return map;
 }

@@ -1,13 +1,15 @@
 import { randomBytes } from 'crypto';
 import type { Pool, PoolClient } from 'pg';
+import { POW_BITS } from './pow';
 
 // Server-issued nonce lifetime. Short enough to limit replay window if a
 // signature is exfiltrated; long enough for a human-driven sign-and-submit flow.
 const CHALLENGE_TTL_SECONDS = 120;
 
 export interface IssuedChallenge {
-  challenge: string;   // 64 hex chars (32 random bytes)
-  expires_at: number;  // Unix seconds
+  challenge: string;       // 64 hex chars (32 random bytes)
+  expires_at: number;      // Unix seconds
+  pow_difficulty: number;  // leading zero bits the client must solve (0 = disabled)
 }
 
 export async function issueChallenge(pool: Pool, address: string): Promise<IssuedChallenge> {
@@ -21,7 +23,7 @@ export async function issueChallenge(pool: Pool, address: string): Promise<Issue
     [challenge, address, expires_at, now],
   );
 
-  return { challenge, expires_at };
+  return { challenge, expires_at, pow_difficulty: POW_BITS };
 }
 
 export interface ConsumedChallenge {

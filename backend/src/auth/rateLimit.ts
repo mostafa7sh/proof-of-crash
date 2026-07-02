@@ -18,6 +18,13 @@ function makeLimiter(windowMs: number, max: number): RateLimitRequestHandler {
     max,
     standardHeaders: true,   // RateLimit-* headers
     legacyHeaders: false,
+    // The internal data seeder presents a shared secret (SEED_TOKEN) so it can
+    // register the demo accounts in one burst. Real clients never have the
+    // secret, so their per-IP limits are unaffected. Disabled when unset.
+    skip: (req: Request) => {
+      const token = process.env['SEED_TOKEN'];
+      return !!token && req.get('x-seed-token') === token;
+    },
     handler: (_req: Request, res: Response) => {
       res.status(429).json({
         error: 'Too many requests, please slow down',

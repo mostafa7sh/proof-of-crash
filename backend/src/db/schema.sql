@@ -7,12 +7,20 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ─── Identity ─────────────────────────────────────────────────────────────
 
--- Users: no username, no email — identity is a cryptographic address
+-- Users: no username, no email — identity is a cryptographic address.
+-- primary_address stays the account anchor (every account has >=1 Ed25519
+-- signing key; passkeys are a session-only convenience layered on top, never a
+-- standalone account). user_id is a stable opaque account id, used e.g. as the
+-- WebAuthn userHandle so credentials never embed an address/PII.
 CREATE TABLE IF NOT EXISTS users (
   primary_address  TEXT    PRIMARY KEY,     -- hex(SHA256(primary_public_key))
   reputation       DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
   created_at       BIGINT  NOT NULL          -- Unix timestamp
 );
+
+-- Phase-1 account anchor (additive; idempotent for existing databases).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS user_id UUID NOT NULL DEFAULT gen_random_uuid();
+CREATE UNIQUE INDEX IF NOT EXISTS users_user_id_key ON users(user_id);
 
 -- Multiple keys per user (different devices, key rotation)
 CREATE TABLE IF NOT EXISTS user_addresses (
@@ -28,7 +36,8 @@ CREATE TABLE IF NOT EXISTS user_addresses (
 CREATE INDEX IF NOT EXISTS idx_user_addresses_primary
   ON user_addresses(user_primary_address);
 
--- Login challenge-response (random nonce, expires in 60s)
+-- Login challenge-response (random nonce, single-use, expires in 120s — see
+-- CHALLENGE_TTL_SECONDS in backend/src/auth/challenges.ts)
 CREATE TABLE IF NOT EXISTS auth_challenges (
   challenge   TEXT    PRIMARY KEY,  -- hex(random 32 bytes)
   address     TEXT    NOT NULL,     -- address requesting challenge
@@ -39,6 +48,36 @@ CREATE TABLE IF NOT EXISTS auth_challenges (
 
 CREATE INDEX IF NOT EXISTS idx_auth_challenges_expires
   ON auth_challenges(expires_at);
+
+-- ─── WebAuthn (passkey) — session-only credentials ────────────────────────
+-- Passkeys authenticate a SESSION only; they never sign blockchain txs. Every
+-- account still has >=1 Ed25519 signing key (see users.user_id).
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+  credential_id  TEXT    PRIMARY KEY,            -- base64url credential id
+  user_id        UUID    NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  public_key     BYTEA   NOT NULL,               -- COSE public key
+  counter        BIGINT  NOT NULL DEFAULT 0,     -- signature counter (replay defence)
+  device_type    TEXT,                            -- 'singleDevice' | 'multiDevice'
+  backed_up      BOOLEAN NOT NULL DEFAULT FALSE,
+  transports     TEXT,                            -- JSON array
+  label          TEXT,
+  created_at     BIGINT  NOT NULL,
+  last_used_at   BIGINT
+);
+CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_user ON webauthn_credentials(user_id);
+
+-- Short-lived, single-use WebAuthn ceremony challenges (address-less). The
+-- two-request ceremony is correlated by an opaque flow_id handed to the client.
+CREATE TABLE IF NOT EXISTS webauthn_challenges (
+  flow_id     UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID,                               -- set for registration; NULL for usernameless auth
+  kind        TEXT    NOT NULL CHECK (kind IN ('register', 'authenticate')),
+  challenge   TEXT    NOT NULL,                    -- base64url
+  expires_at  BIGINT  NOT NULL,
+  used        BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  BIGINT  NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_webauthn_challenges_expires ON webauthn_challenges(expires_at);
 
 -- ─── Session Hardening (auth tokens) ──────────────────────────────────────
 
@@ -133,7 +172,8 @@ CREATE TABLE IF NOT EXISTS crash_proofs (
   tester_address   TEXT    NOT NULL,
   content_hash     TEXT    NOT NULL,            -- references proof_contents.content_hash
   status           TEXT    NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending', 'voting', 'finalized', 'rejected')),
+    -- 'archived' = superseded: a sibling proof for the same app won the ledger slot.
+    CHECK (status IN ('pending', 'voting', 'finalized', 'rejected', 'archived')),
   voting_deadline  BIGINT,                      -- set when proof enters 'voting' state
   reward_score     DECIMAL(4, 2),               -- final median (0.10–10.00), set on finalization
   finalized_at     BIGINT,
@@ -145,6 +185,12 @@ CREATE INDEX IF NOT EXISTS idx_proofs_status    ON crash_proofs(status);
 CREATE INDEX IF NOT EXISTS idx_proofs_tester    ON crash_proofs(tester_address);
 CREATE INDEX IF NOT EXISTS idx_proofs_deadline  ON crash_proofs(voting_deadline)
   WHERE status = 'voting';
+
+-- Idempotent constraint upgrade for databases created before 'archived' existed.
+-- schema.sql is re-run on every startup, so drop+add keeps the CHECK in sync.
+ALTER TABLE crash_proofs DROP CONSTRAINT IF EXISTS crash_proofs_status_check;
+ALTER TABLE crash_proofs ADD  CONSTRAINT crash_proofs_status_check
+  CHECK (status IN ('pending', 'voting', 'finalized', 'rejected', 'archived'));
 
 -- Off-chain content: the actual binary crash input
 CREATE TABLE IF NOT EXISTS proof_contents (
@@ -191,10 +237,14 @@ CREATE INDEX IF NOT EXISTS idx_verifications_verifier ON verifications(verifier_
 
 -- ─── AI Verifications ─────────────────────────────────────────────────────
 
+-- Advisory, off-chain AI review. Before a proof is minted, three AI models
+-- (ChatGPT / Gemini / DeepSeek) inspect the code + crash input; a block earns an
+-- "AI Verified" badge only when all of them approve. This never gates the
+-- ledger — human consensus decides — so it is NOT consensus-critical.
 CREATE TABLE IF NOT EXISTS ai_verifications (
   ai_verification_id  UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
   proof_id            TEXT    NOT NULL REFERENCES crash_proofs(proof_id),
-  model               TEXT    NOT NULL,   -- 'gpt-4', 'claude-3-5-sonnet-20241022', etc.
+  model               TEXT    NOT NULL,   -- provider id: 'chatgpt' | 'gemini' | 'deepseek'
   confidence_score    DECIMAL(4, 3) NOT NULL
     CHECK (confidence_score >= 0 AND confidence_score <= 1),
   reasoning           TEXT,
@@ -202,6 +252,10 @@ CREATE TABLE IF NOT EXISTS ai_verifications (
   queried_at          BIGINT  NOT NULL,
   UNIQUE (proof_id, model)                -- one analysis per model per proof
 );
+
+-- Whether this model approved the proof (all-approve → block is "AI Verified").
+-- Additive for databases created before AI review existed.
+ALTER TABLE ai_verifications ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_ai_verifications_proof ON ai_verifications(proof_id);
 

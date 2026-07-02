@@ -18,7 +18,12 @@ import {
   readRefreshToken,
   challengeRateLimiter,
   authWriteRateLimiter,
+  webauthnRegisterOptions,
+  webauthnRegisterVerify,
+  webauthnAuthOptions,
+  webauthnAuthVerify,
 } from '../auth';
+import type { RegistrationResponseJSON, AuthenticationResponseJSON } from '@simplewebauthn/types';
 import type { ApiError } from '../types';
 
 export const authRouter = Router();
@@ -83,8 +88,10 @@ authRouter.post('/challenge', challengeLimiter, async (req: Request, res: Respon
   }
 
   try {
-    const { challenge, expires_at } = await issueChallenge(pool, addr);
-    res.status(201).json({ challenge, expires_at });
+    // Returns { challenge, expires_at, pow_difficulty }. The client must solve
+    // the proof-of-work and include pow_nonce in the register/login request.
+    const issued = await issueChallenge(pool, addr);
+    res.status(201).json(issued);
   } catch (err) {
     console.error('POST /api/auth/challenge error:', err);
     res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' } satisfies ApiError);
@@ -136,8 +143,16 @@ authRouter.post('/login', writeLimiter, async (req: Request, res: Response) => {
       await recordAudit(pool, req, {
         action: 'auth.login_failed',
         address: bodyAddress(req),
-        details: { reason: result.kind },
+        details: { reason: result.kind },   // granular for server-side audit only
       });
+      // Anti-enumeration: never tell the client whether the address exists.
+      // Unknown address and bad signature collapse to one generic failure.
+      // (Validation/challenge/revoked errors stay specific — they aren't
+      // existence oracles and the user needs them to recover.)
+      if (result.kind === 'unknown_address' || result.kind === 'bad_signature') {
+        res.status(401).json({ error: 'Authentication failed', code: 'AUTH_FAILED' } satisfies ApiError);
+        return;
+      }
       respondToServiceError(res, result);
       return;
     }
@@ -261,7 +276,11 @@ authRouter.post('/revoke', writeLimiter, requireAuth, async (req: Request, res: 
 authRouter.post('/addresses', writeLimiter, requireAuth, async (req: Request, res: Response) => {
   const user = req.user!;
   try {
-    const result = await attachAddress(pool, user.primary_address, req.body ?? {});
+    const result = await attachAddress(
+      pool,
+      { primaryAddress: user.primary_address, existingAddress: user.address },
+      req.body ?? {},
+    );
     if ('kind' in result) {
       respondToServiceError(res, result);
       return;
@@ -290,8 +309,8 @@ authRouter.post('/addresses', writeLimiter, requireAuth, async (req: Request, re
 authRouter.get('/me', requireAuth, async (req: Request, res: Response) => {
   const user = req.user!;
   try {
-    const userRow = await pool.query<{ primary_address: string; reputation: string; created_at: string }>(
-      `SELECT primary_address, reputation, created_at FROM users WHERE primary_address = $1`,
+    const userRow = await pool.query<{ user_id: string; primary_address: string; reputation: string; created_at: string }>(
+      `SELECT user_id, primary_address, reputation, created_at FROM users WHERE primary_address = $1`,
       [user.primary_address],
     );
     const addrRows = await pool.query<{ address: string; registered_at: string; is_revoked: boolean }>(
@@ -301,11 +320,25 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response) => {
     );
     const current = addrRows.rows.find(r => r.address === user.address);
 
+    // How many passkeys this account has, so the UI can show "already added"
+    // instead of always prompting to register one.
+    const uid = userRow.rows[0]?.user_id ?? null;
+    let passkeyCount = 0;
+    if (uid) {
+      const pk = await pool.query<{ count: string }>(
+        `SELECT COUNT(*) AS count FROM webauthn_credentials WHERE user_id = $1`,
+        [uid],
+      );
+      passkeyCount = parseInt(pk.rows[0]?.count ?? '0', 10);
+    }
+
     res.json({
+      user_id: userRow.rows[0]?.user_id ?? null,
       primary_address: user.primary_address,
       address: user.address,
       reputation: userRow.rows[0] ? parseFloat(userRow.rows[0].reputation) : 0,
       created_at: userRow.rows[0] ? parseInt(userRow.rows[0].created_at) : null,
+      passkey_count: passkeyCount,
       // Preserved for backward compatibility (describe the current address).
       registered_at: current ? parseInt(current.registered_at) : null,
       is_revoked: current?.is_revoked ?? false,
@@ -318,6 +351,102 @@ authRouter.get('/me', requireAuth, async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error('GET /api/auth/me error:', err);
+    res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' } satisfies ApiError);
+  }
+});
+
+// ─── WebAuthn / passkeys (session-only) ────────────────────────────────────
+//
+// Passkeys log a user into an EXISTING account (which has >=1 Ed25519 key) and
+// authenticate sessions only — they never sign on-chain actions. Registration
+// is authenticated (add a passkey to your account); authentication is public and
+// usernameless (discoverable credential). The ceremony spans two requests
+// correlated by an opaque flow_id; the browser enforces origin/RP binding, so
+// this path is phishing-resistant.
+
+async function userIdFor(primaryAddress: string): Promise<string | null> {
+  const r = await pool.query<{ user_id: string }>(
+    `SELECT user_id FROM users WHERE primary_address = $1`,
+    [primaryAddress],
+  );
+  return r.rows[0]?.user_id ?? null;
+}
+
+// POST /api/auth/webauthn/register/options — begin adding a passkey (authed).
+authRouter.post('/webauthn/register/options', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = await userIdFor(req.user!.primary_address);
+    if (!userId) {
+      res.status(404).json({ error: 'Account not found', code: 'UNKNOWN_ADDRESS' } satisfies ApiError);
+      return;
+    }
+    const { username } = req.body as { username?: unknown };
+    const label = typeof username === 'string' && username.trim() ? username.trim().slice(0, 64) : undefined;
+    const { flow_id, options } = await webauthnRegisterOptions(pool, userId, label);
+    res.json({ flow_id, options });
+  } catch (err) {
+    console.error('POST /api/auth/webauthn/register/options error:', err);
+    res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' } satisfies ApiError);
+  }
+});
+
+// POST /api/auth/webauthn/register/verify — finish adding a passkey (authed).
+authRouter.post('/webauthn/register/verify', writeLimiter, requireAuth, async (req: Request, res: Response) => {
+  const { flow_id, response, label } = req.body as { flow_id?: string; response?: RegistrationResponseJSON; label?: string };
+  if (!flow_id || !response) {
+    res.status(400).json({ error: 'flow_id and response are required', code: 'INVALID_INPUT' } satisfies ApiError);
+    return;
+  }
+  try {
+    const userId = await userIdFor(req.user!.primary_address);
+    if (!userId) {
+      res.status(404).json({ error: 'Account not found', code: 'UNKNOWN_ADDRESS' } satisfies ApiError);
+      return;
+    }
+    const result = await webauthnRegisterVerify(pool, userId, { flow_id, response, ...(label ? { label } : {}) });
+    if ('kind' in result) {
+      res.status(400).json({ error: 'Passkey registration failed', code: 'WEBAUTHN_FAILED' } satisfies ApiError);
+      return;
+    }
+    await recordAudit(pool, req, { action: 'auth.address_attach', address: req.user!.address, entityId: result.credential_id });
+    res.status(201).json({ registered: true, credential_id: result.credential_id });
+  } catch (err) {
+    console.error('POST /api/auth/webauthn/register/verify error:', err);
+    res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' } satisfies ApiError);
+  }
+});
+
+// POST /api/auth/webauthn/authenticate/options — begin passkey login (public).
+authRouter.post('/webauthn/authenticate/options', challengeLimiter, async (_req: Request, res: Response) => {
+  try {
+    const { flow_id, options } = await webauthnAuthOptions(pool);
+    res.json({ flow_id, options });
+  } catch (err) {
+    console.error('POST /api/auth/webauthn/authenticate/options error:', err);
+    res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' } satisfies ApiError);
+  }
+});
+
+// POST /api/auth/webauthn/authenticate/verify — finish passkey login (public).
+authRouter.post('/webauthn/authenticate/verify', writeLimiter, async (req: Request, res: Response) => {
+  const { flow_id, response } = req.body as { flow_id?: string; response?: AuthenticationResponseJSON };
+  if (!flow_id || !response) {
+    res.status(400).json({ error: 'flow_id and response are required', code: 'INVALID_INPUT' } satisfies ApiError);
+    return;
+  }
+  try {
+    const result = await webauthnAuthVerify(pool, { flow_id, response });
+    if ('kind' in result) {
+      await recordAudit(pool, req, { action: 'auth.login_failed', address: null, details: { method: 'webauthn', reason: result.kind } });
+      res.status(401).json({ error: 'Authentication failed', code: 'AUTH_FAILED' } satisfies ApiError);
+      return;
+    }
+    // Session "acts as" the account's primary signing key.
+    const session = await issueSession(res, { primary_address: result.primary_address, address: result.primary_address });
+    await recordAudit(pool, req, { action: 'auth.login', address: result.primary_address, entityId: result.user_id, details: { method: 'webauthn' } });
+    res.json({ primary_address: result.primary_address, address: result.primary_address, ...session });
+  } catch (err) {
+    console.error('POST /api/auth/webauthn/authenticate/verify error:', err);
     res.status(500).json({ error: 'Internal server error', code: 'INTERNAL_ERROR' } satisfies ApiError);
   }
 });
@@ -337,6 +466,9 @@ function respondToServiceError(
       return;
     case 'bad_signature':
       res.status(401).json({ error: 'Signature verification failed', code: 'BAD_SIGNATURE' } satisfies ApiError);
+      return;
+    case 'pow':
+      res.status(400).json({ error: 'Proof-of-work missing or invalid', code: 'POW_INVALID' } satisfies ApiError);
       return;
     case 'challenge':
       res.status(401).json({ error: 'Challenge invalid, expired, or already used', code: 'BAD_CHALLENGE' } satisfies ApiError);

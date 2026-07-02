@@ -5,6 +5,14 @@ export { requireAuth, requireAdmin } from './middleware';
 export type { AuthenticatedUser } from './middleware';
 export { registerAddress, loginAddress, attachAddress } from './service';
 export { buildSignedMessage } from './messages';
+export { accountsOf, sameAccount } from './accounts';
+export {
+  webauthnRegisterOptions,
+  webauthnRegisterVerify,
+  webauthnAuthOptions,
+  webauthnAuthVerify,
+  purgeExpiredWebauthnChallenges,
+} from './webauthn';
 
 export {
   issueRefreshToken,
