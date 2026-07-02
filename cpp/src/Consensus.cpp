@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace poc {
@@ -36,30 +37,57 @@ RewardCalculation calculateRewards(const std::vector<VerifierVote>& votes) {
     }
 
     double medianScore = computeMedian(scores);
-    double baseReward = std::floor(medianScore * 100);
-    double finderReward = std::floor(baseReward * FINDER_SHARE);
-    double verifierMaxPer = baseReward - finderReward;  // 30% per verifier
 
-    std::vector<VerifierPayout> payouts;
-    payouts.reserve(votes.size());
+    // The coinbase reward is a fixed amount per finalized proof. The finder
+    // always takes exactly FINDER_SHARE of it; the remainder is the validator
+    // pool, distributed so the WHOLE block reward is always minted (no dust).
+    double baseReward = BLOCK_REWARD;
+    double finderReward = std::floor(baseReward * FINDER_SHARE * 100) / 100.0;
+    double verifierPool = baseReward - finderReward;  // validators share this 30%
 
+    // Weight each validator by closeness to the median: weight = 1/(1+distance),
+    // so a vote on the median earns the most and accuracy degrades smoothly.
+    // Every validator gets a proportional, non-zero share of the pool.
+    std::vector<double> weights;
+    weights.reserve(votes.size());
+    double totalWeight = 0.0;
     for (const auto& v : votes) {
         double distance = std::abs(v.score - medianScore);
-        double reward;
+        double w = 1.0 / (1.0 + distance);
+        weights.push_back(w);
+        totalWeight += w;
+    }
 
-        if (distance > OUTLIER_THRESHOLD) {
-            reward = 0.0;
-        } else {
-            double accuracyBonus = 1.0 - distance / OUTLIER_THRESHOLD;
-            reward = std::floor(verifierMaxPer * accuracyBonus * 100) / 100.0;
-        }
+    // Floor each share to cents, tracking the most-accurate validator so the
+    // rounding remainder can be handed to them — guaranteeing the validator
+    // payouts sum to verifierPool EXACTLY (and total minted == baseReward).
+    std::vector<VerifierPayout> payouts;
+    payouts.reserve(votes.size());
+    double distributed = 0.0;
+    size_t closestIdx = 0;
+    double closestDistance = std::numeric_limits<double>::infinity();
+
+    for (size_t i = 0; i < votes.size(); ++i) {
+        double distance = std::abs(votes[i].score - medianScore);
+        double share = (totalWeight > 0.0) ? verifierPool * weights[i] / totalWeight : 0.0;
+        double reward = std::floor(share * 100) / 100.0;
 
         payouts.push_back({
-            v.address,
-            v.score,
+            votes[i].address,
+            votes[i].score,
             std::round(distance * 1000) / 1000.0,
             reward,
         });
+        distributed += reward;
+        if (distance < closestDistance) {
+            closestDistance = distance;
+            closestIdx = i;
+        }
+    }
+
+    double remainder = std::round((verifierPool - distributed) * 100) / 100.0;
+    if (remainder != 0.0 && !payouts.empty()) {
+        payouts[closestIdx].reward = std::round((payouts[closestIdx].reward + remainder) * 100) / 100.0;
     }
 
     double totalVerifierReward = 0.0;
@@ -72,7 +100,7 @@ RewardCalculation calculateRewards(const std::vector<VerifierVote>& votes) {
         medianScore,
         baseReward,
         finderReward,
-        verifierMaxPer,
+        verifierPool,
         std::move(payouts),
         totalMinted,
     };

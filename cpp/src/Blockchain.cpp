@@ -1,5 +1,6 @@
 #include "Blockchain.h"
 
+#include <ctime>
 #include <map>
 #include <stdexcept>
 #include <type_traits>
@@ -30,11 +31,21 @@ Block Blockchain::addBlock(const std::vector<Transaction>& transactions,
     }
 
     const Block& previousBlock = blocks_.back();
+
+    // Block timestamps must strictly increase, but they're only second-granular,
+    // so several blocks mined within the same second would otherwise be rejected.
+    // Force monotonicity: use the requested/current time, but never less than
+    // previous + 1. This lets blocks be mined back-to-back (seeding, bursts).
+    uint32_t ts = (timestamp != 0) ? timestamp : static_cast<uint32_t>(std::time(nullptr));
+    if (ts <= previousBlock.header().timestamp()) {
+        ts = previousBlock.header().timestamp() + 1;
+    }
+
     Block newBlock = Block::build(
         static_cast<uint32_t>(tipHeight_ + 1),
         tipHash_,
         transactions,
-        timestamp);
+        ts);
 
     BlockValidation validation = newBlock.validate(&previousBlock);
     if (!validation.valid) {

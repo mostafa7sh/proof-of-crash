@@ -358,7 +358,7 @@ void testConsensus() {
         EXPECT(std::abs(computeMedian({1.0, 2.0, 3.0, 4.0}) - 2.5) < 0.001);
     PASS()
 
-    TEST("calculateRewards basic")
+    TEST("calculateRewards fixed split")
         std::vector<VerifierVote> votes = {
             {"v1", 4.2},
             {"v2", 4.1},
@@ -366,28 +366,43 @@ void testConsensus() {
         };
         auto r = calculateRewards(votes);
         EXPECT(std::abs(r.medianScore - 4.1) < 0.001);
-        // Note: floor(4.1 * 100) = 409 due to IEEE 754 (4.1 * 100 = 409.999...)
-        EXPECT(std::abs(r.baseReward - 409.0) < 0.001);
-        EXPECT(std::abs(r.finderReward - 286.0) < 0.001); // floor(409 * 0.70)
-        EXPECT(std::abs(r.verifierMaxPer - 123.0) < 0.001); // 409 - 286
+        // The block reward is fixed: finder 70%, validators 30% — independent
+        // of the median score (the median only shapes the validator split).
+        EXPECT(std::abs(r.baseReward - 1000.0) < 0.001);
+        EXPECT(std::abs(r.finderReward - 700.0) < 0.001);
+        EXPECT(std::abs(r.verifierPool - 300.0) < 0.001);
     PASS()
 
-    TEST("outlier gets zero reward")
+    TEST("reward distribution always sums to the full block reward")
+        // Even with an outlier and uneven distances, finder + validators must
+        // equal BLOCK_REWARD exactly (no minted dust, no over-mint).
         std::vector<VerifierVote> votes = {
             {"v1", 4.2},
             {"v2", 4.1},
-            {"v3", 2.0},  // distance > 1.0 from median
+            {"v3", 2.0},   // far from the median
+            {"v4", 4.0},
         };
         auto r = calculateRewards(votes);
-        // v3 is an outlier (distance > 1.0)
-        bool hasZero = false;
+        double verifierTotal = 0.0;
+        for (const auto& p : r.payouts) verifierTotal += p.reward;
+        EXPECT(std::abs(verifierTotal - 300.0) < 0.001);
+        EXPECT(std::abs(r.totalMinted - 1000.0) < 0.001);
+    PASS()
+
+    TEST("closer-to-median validators earn a larger share")
+        std::vector<VerifierVote> votes = {
+            {"v1", 4.1},   // exactly the median — should earn the most
+            {"v2", 4.1},
+            {"v3", 2.0},   // an outlier — still paid, but the least
+        };
+        auto r = calculateRewards(votes);
+        double onMedian = 0.0, outlier = 0.0;
         for (const auto& p : r.payouts) {
-            if (p.address == "v3") {
-                EXPECT(std::abs(p.reward) < 0.001);
-                hasZero = true;
-            }
+            if (p.address == "v1") onMedian = p.reward;
+            if (p.address == "v3") outlier = p.reward;
         }
-        EXPECT(hasZero);
+        EXPECT(outlier > 0.0);          // every validator gets a proportional share
+        EXPECT(onMedian > outlier);     // closer to the median ⇒ larger share
     PASS()
 
     TEST("too few votes throws")

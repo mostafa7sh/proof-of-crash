@@ -8,13 +8,19 @@ namespace poc {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Minimum number of verifier votes to finalize a proof.
+/// Minimum number of verifier votes to finalize a proof (hard floor — the
+/// runtime quorum may be raised above this as the active community grows).
 inline constexpr int MIN_VERIFICATIONS = 3;
 
-/// Maximum distance from median before reward drops to zero.
+/// Distance from the median within which a vote is counted as "agreeing" for
+/// consensus. (Rewards are no longer zeroed past this — see calculateRewards.)
 inline constexpr double OUTLIER_THRESHOLD = 1.0;
 
-/// Fraction of base reward allocated to bug finder.
+/// Fixed coinbase reward minted per finalized proof, split finder/validators.
+inline constexpr double BLOCK_REWARD = 1000.0;
+
+/// Fraction of the block reward paid to the bug finder (the rest is the
+/// validator pool, shared by closeness to the median).
 inline constexpr double FINDER_SHARE = 0.70;
 
 /// Voting window in seconds (7 days).
@@ -36,11 +42,11 @@ struct VerifierPayout {
 
 struct RewardCalculation {
     double medianScore;
-    double baseReward;          // floor(median × 100) PoC
-    double finderReward;        // 70% of base
-    double verifierMaxPer;      // 30% of base (max per verifier)
+    double baseReward;          // fixed block reward (BLOCK_REWARD)
+    double finderReward;        // 70% of the block reward
+    double verifierPool;        // 30% of the block reward, shared by all validators
     std::vector<VerifierPayout> payouts;
-    double totalMinted;         // finder + all verifiers
+    double totalMinted;         // finder + all validators == baseReward exactly
 };
 
 struct FinalizationCheck {

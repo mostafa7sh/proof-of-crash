@@ -336,7 +336,7 @@ static json handleBuildCoinbase(const json& params, Blockchain&, Mempool&) {
         {"median_score", rewards.medianScore},
         {"base_reward", rewards.baseReward},
         {"finder_reward", rewards.finderReward},
-        {"verifier_max_per", rewards.verifierMaxPer},
+        {"verifier_pool", rewards.verifierPool},
         {"total_minted", rewards.totalMinted},
         {"payouts", payouts},
     };
@@ -365,6 +365,12 @@ static json handleConsensusStatus(const json& params, Blockchain&, Mempool&) {
 
     int voteCount = static_cast<int>(scores.size());
 
+    // The required quorum is dynamic: the caller (Node) scales it with the size
+    // of the active community. MIN_VERIFICATIONS is the hard floor — the quorum
+    // is never allowed below it.
+    int minVerifications = params.value("min_verifications", MIN_VERIFICATIONS);
+    if (minVerifications < MIN_VERIFICATIONS) minVerifications = MIN_VERIFICATIONS;
+
     if (voteCount == 0) {
         return {
             {"vote_count", 0},
@@ -373,7 +379,7 @@ static json handleConsensusStatus(const json& params, Blockchain&, Mempool&) {
             {"dissenting_count", 0},
             {"consensus_reached", false},
             {"outlier_threshold", OUTLIER_THRESHOLD},
-            {"min_verifications", MIN_VERIFICATIONS},
+            {"min_verifications", minVerifications},
         };
     }
 
@@ -384,7 +390,7 @@ static json handleConsensusStatus(const json& params, Blockchain&, Mempool&) {
     }
     int dissenting = voteCount - agreeing;
 
-    bool quorum = voteCount >= MIN_VERIFICATIONS;
+    bool quorum = voteCount >= minVerifications;
     bool majorityAgree = agreeing * 2 > voteCount;  // strict majority
 
     return {
@@ -394,7 +400,7 @@ static json handleConsensusStatus(const json& params, Blockchain&, Mempool&) {
         {"dissenting_count", dissenting},
         {"consensus_reached", quorum && majorityAgree},
         {"outlier_threshold", OUTLIER_THRESHOLD},
-        {"min_verifications", MIN_VERIFICATIONS},
+        {"min_verifications", minVerifications},
     };
 }
 
