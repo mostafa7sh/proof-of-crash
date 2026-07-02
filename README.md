@@ -23,28 +23,12 @@ When it's up:
 
 | Service  | URL                          |
 |----------|------------------------------|
-| Frontend | http://localhost:3001        |
+| Frontend | http://localhost:3009        |
 | Backend  | http://localhost:3000 (`/api`, `/health`) |
 | Postgres | localhost:5432               |
 
 The browser only talks to the frontend origin — nginx proxies `/api` and
 `/health` through to the backend, so there's no CORS to configure.
-
-### Ports
-
-The frontend defaults to **3001** and the backend to **3000**. If either host
-port is already taken, you have two options:
-
-1. **Override explicitly** — pick any free port without editing files:
-   ```bash
-   FRONTEND_PORT=3002 BACKEND_PORT=3010 docker compose up --build
-   ```
-2. **Auto-select free ports** — the helper script finds the next free ports
-   (starting at 3001 / 3000) and runs compose for you:
-   ```bash
-   ./up.sh                 # add -d to detach; args pass through to compose
-   ```
-   It prints the chosen URLs before starting.
 
 ### Common commands
 
@@ -58,8 +42,12 @@ docker compose down -v           # stop and wipe the database
 
 ## Notes
 
-- `JWT_SECRET` in `docker-compose.yml` is a throwaway dev value — replace it for
-  any real deployment.
 - The wallet keys the frontend generates live in `localStorage`; this is a demo
   wallet, not production key management.
+- **AI model review (advisory):** before a proof is minted, three AI models
+  (ChatGPT, Gemini, DeepSeek) review the code + crash input; a block earns an
+  **"AI Verified"** badge only when all three approve. This is advisory and *not*
+  consensus-critical — human consensus still decides what enters the ledger. With
+  no API keys the models run as a deterministic *simulated* judge (offline, free);
+  set `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` to use the real APIs.
 - Per-service details: [`backend/`](backend/) and [`frontend/README.md`](frontend/README.md).

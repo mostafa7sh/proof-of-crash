@@ -48,9 +48,35 @@ services:
       DB_PASSWORD: poc_password
       PORT:        3000
       NODE_ENV:    development
+      # Miner cadence (ms). Default 30s; lower it for faster e2e/demo runs.
+      BLOCK_INTERVAL_MS: "${BLOCK_INTERVAL_MS:-30000}"
       JWT_SECRET:  195c3ee6aa4ae11065570c8bb48d508d5cb010fe6fcd5a1d90e8ab31d3e6c73173a0593c132e9cf19d95ed5b88892fea
       # Trust the nginx frontend proxy so rate-limiting/audit see real client IPs.
       TRUST_PROXY: "true"
+      # Per-IP auth rate limits (secure defaults; overridable for load tests / e2e).
+      AUTH_RATE_MAX:           "${AUTH_RATE_MAX:-20}"
+      AUTH_CHALLENGE_RATE_MAX: "${AUTH_CHALLENGE_RATE_MAX:-10}"
+      # Operator addresses allowed to trigger on-demand mining (/api/ledger/finalize).
+      # Defaults to the seed 'alice' account so the seeder can mine blocks fast.
+      ADMIN_ADDRESSES: "${ADMIN_ADDRESSES:-65c0a5f362353fb1fc6fd70475499bf7db199adee2d8a2fbe815b8cd3aeed76f}"
+      # Shared secret that lets the internal data seeder bypass the auth rate
+      # limiter (real clients never have it). Dev-only, like JWT_SECRET.
+      SEED_TOKEN: "${SEED_TOKEN:-poc-seed-secret-2026}"
+      # Optional WebAuthn relying-party config (localhost works over http for dev).
+      WEBAUTHN_RP_ID:  "${WEBAUTHN_RP_ID:-localhost}"
+      WEBAUTHN_ORIGIN: "${WEBAUTHN_ORIGIN:-http://localhost:3001,http://localhost:3009,http://localhost:3012}"
+      # Advisory AI model review (ChatGPT / Gemini / DeepSeek) of each proof before
+      # it is minted. With no API keys every model runs as a deterministic
+      # *simulated* judge (offline, free) so the "AI Verified" badge works out of
+      # the box. Set a provider's key to switch just that provider to the real API.
+      AI_VERIFICATION_ENABLED: "${AI_VERIFICATION_ENABLED:-true}"
+      AI_TIMEOUT_MS:  "${AI_TIMEOUT_MS:-20000}"
+      OPENAI_API_KEY:   "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL:     "${OPENAI_MODEL:-}"
+      GEMINI_API_KEY:   "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL:     "${GEMINI_MODEL:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_MODEL:   "${DEEPSEEK_MODEL:-}"
     healthcheck:
       # node:22 ships a global fetch; 200 from /health means the API is up.
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -68,8 +94,23 @@ services:
       backend:
         condition: service_healthy
     ports:
-      # Host 3001 -> nginx :80. Override with FRONTEND_PORT if 3001 is taken.
-      - "${FRONTEND_PORT:-3001}:80"
+      - "${FRONTEND_PORT:-3009}:80"
+
+  # One-shot demo-data seeder. Waits for the backend, then drives the real API to
+  # populate the chain (users, apps, proofs, blocks, transfers). Idempotent: it
+  # no-ops if the chain already has data, so it's safe on every `up --build`.
+  # To reseed from scratch, wipe the DB volume: `docker compose down -v`.
+  seeder:
+    build:
+      context: ./seed
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      BASE:       http://backend:3000
+      SEED_TOKEN: "${SEED_TOKEN:-poc-seed-secret-2026}"
+    restart: "no"
 
 volumes:
   postgres_data:

@@ -1,0 +1,10 @@
+{
+  "name": "proof-of-crash-seed",
+  "private": true,
+  "type": "module",
+  "description": "One-shot demo data seeder — drives the real API to populate the chain.",
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.4.0"
+  }
+}
