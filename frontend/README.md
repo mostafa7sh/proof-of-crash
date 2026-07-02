@@ -6,10 +6,10 @@ Talks to the existing backend REST API; no backend logic lives here.
 ## Run
 
 The whole stack (frontend + backend + engine + DB) runs from the repo root with
-a single command — the frontend is built and served by nginx on port 3001:
+a single command — the frontend is built and served by nginx on port 3009:
 
 ```bash
-docker compose up --build      # then open http://localhost:3001
+docker compose up --build      # then open http://localhost:3009
 ```
 
 See the [root README](../README.md) for ports/fallback. For local UI work

@@ -4,7 +4,7 @@
 #
 #     docker compose up --build
 #
-# Then open the frontend at http://localhost:3001 (see port notes below).
+# Then open the frontend at http://localhost:3009 (see port notes below).
 #
 # Ports are overridable so you can dodge host conflicts without editing this
 # file, e.g.  FRONTEND_PORT=3002 docker compose up --build
