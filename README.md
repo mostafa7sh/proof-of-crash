@@ -50,4 +50,7 @@ docker compose down -v           # stop and wipe the database
   consensus-critical — human consensus still decides what enters the ledger. With
   no API keys the models run as a deterministic *simulated* judge (offline, free);
   set `OPENAI_API_KEY` / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` to use the real APIs.
+- **External material:** the passwordless login uses [WebAuthn](https://www.w3.org/TR/webauthn/)
+  (via the [`@simplewebauthn`](https://simplewebauthn.dev/) libraries), which I referenced as
+  external material during development.
 - Per-service details: [`backend/`](backend/) and [`frontend/README.md`](frontend/README.md).
